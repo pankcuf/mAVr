@@ -1,0 +1,1 @@
+../../../M3U8Parser/Pod/Classes/NSString+m3u8.h
