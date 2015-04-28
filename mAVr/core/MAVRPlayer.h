@@ -51,6 +51,7 @@ typedef enum {
 
 @property (readonly) NSUInteger streamsCount;
 @property (readonly) BOOL isExternalPlayback;
+@property (nonatomic, setter=setIsZoomed:) BOOL isZoomed;
 
 @property (readonly) MAVRPlayerState state;
 
