@@ -23,6 +23,8 @@
 #define kMAVR_DURATION @"duration"
 #define kMAVR_PLAYBACK_LIKELY_KEEP_UP @"playbackLikelyToKeepUp"
 
+#define kMAVR_STALL_TIME 8.0f
+
 static void *kPlayerItemContext = (void *) 1;
 static void *kPlayerItemStatusContext = (void *) 2;
 static void *kPlayerRateContext = (void *) 4;
@@ -73,7 +75,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	NSMutableDictionary* registeredHandlers;
 	
 	M3U8MasterPlaylist* _playlist;
-	
+	NSTimer* stallTimer;
 	id observerCurrentTime;
 	id observerStart;
 	id observerEnd;
@@ -167,12 +169,17 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		} @catch (id anException) {}
 	}
 	
+	[self stopStallTimer];
 	[self removeBoundaryObservers];
 	
 	_currentStreamIndex = 0;
 	_playlist = nil;
 	started = NO;
 	completed = NO;
+	seeking = NO;
+	waitForComplete = NO;
+	waitForResume = NO;
+	switching = NO;
 }
 
 
@@ -526,8 +533,32 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 
 -(void)playbackLikelyToKeepUpHandler {
 
-	if (_player.currentItem && !_player.currentItem.playbackLikelyToKeepUp && _state == MAVRPlayerStatePlaying)
-		[self notify:MAVRPlayerNotificationError];
+	if (_player.currentItem) {
+
+		if (!_player.currentItem.playbackLikelyToKeepUp && _state == MAVRPlayerStatePlaying)
+			stallTimer = [NSTimer scheduledTimerWithTimeInterval:kMAVR_STALL_TIME  target:self selector:@selector(stallTimerHandler:) userInfo:nil repeats:NO];
+		else if (_player.currentItem.playbackLikelyToKeepUp && stallTimer)
+			[self stopStallTimer];
+	}
+}
+
+- (void)stallTimerHandler:(NSTimer *)theTimer {
+	
+	if (_player.currentItem) {
+		
+		[self stopStallTimer];
+		
+		if (!_player.currentItem.playbackLikelyToKeepUp)
+			[self notify:MAVRPlayerNotificationError];
+	}
+}
+
+-(void)stopStallTimer {
+
+	if (stallTimer) {
+		[stallTimer invalidate];
+		stallTimer = nil;
+	}
 }
 
 -(void)statusChanged:(AVPlayerItemStatus)newStatus {
@@ -758,6 +789,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 -(void)handleComplete {
 	//NSLog(@"handleComplete %@", [self getFlagsString]);
 	[self removeBoundaryObservers];
+	[self stopStallTimer];
 
 	if (_state == MAVRPlayerStateBuffering)
 		[self notify:MAVRPlayerNotificationBufferingEnd];
