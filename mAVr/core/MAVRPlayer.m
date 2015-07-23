@@ -136,6 +136,11 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	_layer.frame = frame;
 }
 
+-(void)setVisible:(BOOL)value {
+	
+	[_layer setHidden:!value];
+}
+
 -(void)resetPlayer {
 	
 	if (_player.currentItem) {
@@ -262,7 +267,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	_currentStreamIndex = 0;
 	
-	ready = NO;
+	started = ready = NO;
 	
 	_playlist = [[M3U8MasterPlaylist alloc] initWithContent:content baseURL:nil];
 	
@@ -295,7 +300,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	_asset = [AVAsset assetWithURL:[NSURL URLWithString:[self getStreamUrlForIndex:_currentStreamIndex]]];
 	
 	AVPlayerItem* item = [AVPlayerItem playerItemWithAsset:_asset];
-	
+	[item seekToTime:_player.currentTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
 	[_player replaceCurrentItemWithPlayerItem:item];
 }
 
@@ -360,8 +365,10 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 			
 			seeking = NO;
 			
-			if (_state == MAVRPlayerStateCompleted)
+			if (_state == MAVRPlayerStateCompleted) {
 				started = NO;
+				[self notify:MAVRPlayerNotificationCompleted];
+			}
 		}
 	}];
 }
@@ -504,7 +511,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 				[self notify:MAVRPlayerNotificationPaused];
 			}
 			
-		} else if (!seeking) {
+		} else if (!seeking || _state == MAVRPlayerStateBuffering) {
 			
 			MAVRPlayerState oldState = _state;
 			
@@ -535,10 +542,17 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 
 	if (_player.currentItem) {
 
-		if (!_player.currentItem.playbackLikelyToKeepUp && _state == MAVRPlayerStatePlaying)
-			stallTimer = [NSTimer scheduledTimerWithTimeInterval:kMAVR_STALL_TIME  target:self selector:@selector(stallTimerHandler:) userInfo:nil repeats:NO];
-		else if (_player.currentItem.playbackLikelyToKeepUp && stallTimer)
+		if (!_player.currentItem.playbackLikelyToKeepUp && _state == MAVRPlayerStatePlaying) {
+			//HACK: We have a problem with playlists, coz real duration slightly different
+			if (_duration - _currentTime <= 8.0)
+				[self handleComplete];
+			else
+				stallTimer = [NSTimer scheduledTimerWithTimeInterval:kMAVR_STALL_TIME  target:self selector:@selector(stallTimerHandler:) userInfo:nil repeats:NO];
+		
+		} else if (_player.currentItem.playbackLikelyToKeepUp && stallTimer) {
+		
 			[self stopStallTimer];
+		}
 	}
 }
 
@@ -597,8 +611,11 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 			//[self handleReady];
 			
 		} else if (switching) {
+
+			switching = NO;
+			[self notify:MAVRPlayerNotificationSwitchQualityEnd];
 			
-			[self seek:seekToTime];
+			//[self seek:seekToTime];
 			
 		} else if (started && waitForResume && _state == MAVRPlayerStateBuffering) {
 			
@@ -711,7 +728,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		MAVRPlayer* sself = wself;
 		double newTime = CMTimeGetSeconds(time);
 
-		if (sself->_duration > 0 && sself->_duration - sself->_currentTime <= sself->marginBeforeEnd && !sself->completed) {
+		if (sself->_duration > 0 && sself->_duration - newTime <= sself->marginBeforeEnd && !sself->completed) {
 			
 			if (!seeking)
 				[sself handleComplete];
@@ -809,7 +826,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	_bufferTime = 0;
 	_state = MAVRPlayerStateCompleted;
 	
-	[self notify:MAVRPlayerNotificationCompleted];
+	//[self notify:MAVRPlayerNotificationCompleted];
 	
 	if (started)
 		[self pause];

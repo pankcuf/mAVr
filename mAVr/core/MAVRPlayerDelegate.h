@@ -17,6 +17,7 @@
 @property (readonly) NSUInteger currentStreamIndex;
 @property (readonly) BOOL isExternalPlayback;
 
+-(void)setVisible:(BOOL)value;
 -(void)addHandler:(MAVRPlayerNotificationType)type withBlock:(MAVRPlayerBlockHandler)func;
 -(void)removeHandler:(MAVRPlayerNotificationType)type withBlock:(MAVRPlayerBlockHandler)func;
 

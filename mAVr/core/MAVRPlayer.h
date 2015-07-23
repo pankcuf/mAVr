@@ -57,6 +57,7 @@ typedef enum {
 
 -(id)initWithView:(UIView*)parent;
 -(void)setFrame:(CGRect)frame;
+-(void)setVisible:(BOOL)value;
 
 -(void)addHandler:(MAVRPlayerNotificationType)type withBlock:(MAVRPlayerBlockHandler)func;
 -(void)removeHandler:(MAVRPlayerNotificationType)type withBlock:(MAVRPlayerBlockHandler)func;
