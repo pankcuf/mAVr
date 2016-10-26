@@ -1,0 +1,12 @@
+use_frameworks!
+
+target 'mAVr_Example' do
+  pod 'M3U8Parser', :git => 'https://github.com/justMaku/M3U8Parser.git'
+  pod 'mAVr', :path => '../'
+
+  target 'mAVr_Tests' do
+    inherit! :search_paths
+
+    
+  end
+end

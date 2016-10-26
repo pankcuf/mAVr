@@ -1,0 +1,6 @@
+framework module mAVr {
+  umbrella header "mAVr-umbrella.h"
+
+  export *
+  module * { export * }
+}

@@ -1,0 +1,27 @@
+PODS:
+  - M3U8Parser (0.1.0)
+  - mAVr (0.1.1):
+    - M3U8Parser
+
+DEPENDENCIES:
+  - M3U8Parser (from `https://github.com/justMaku/M3U8Parser.git`)
+  - mAVr (from `../`)
+
+EXTERNAL SOURCES:
+  M3U8Parser:
+    :git: https://github.com/justMaku/M3U8Parser.git
+  mAVr:
+    :path: ../
+
+CHECKOUT OPTIONS:
+  M3U8Parser:
+    :commit: 0e5021a9c92246e94954d4f61a8bf6c196e844f6
+    :git: https://github.com/justMaku/M3U8Parser.git
+
+SPEC CHECKSUMS:
+  M3U8Parser: bafab821e1621a9640ebb8ff7f02d0063b35ad87
+  mAVr: 2d3bbb7f23a03997cde58908f977469010fce557
+
+PODFILE CHECKSUM: 8bc925df5ecace1b75a5a4d40fa152ccdcb32a1f
+
+COCOAPODS: 1.1.1
