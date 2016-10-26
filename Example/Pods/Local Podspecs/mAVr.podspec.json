@@ -20,7 +20,7 @@
   },
   "source_files": "mAVr/Classes/**/*",
   "dependencies": {
-    "M3U8Parser": [
+    "M3U8Kit2": [
 
     ]
   }

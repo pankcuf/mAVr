@@ -979,7 +979,8 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	if (self.streamsCount < index)
 		index = self.streamsCount - 1;
 	
-	M3U8ExtXStreamInf* streamInfo = [_playlist.xStreamList extXStreamInfAtIndex:index];
+	
+	M3U8ExtXStreamInf* streamInfo = [_playlist.xStreamList xStreamInfAtIndex:index];
 	
 	return [streamInfo URI];
 	

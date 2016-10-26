@@ -1,7 +1,7 @@
 use_frameworks!
 
 target 'mAVr_Example' do
-  pod 'M3U8Parser', :git => 'https://github.com/justMaku/M3U8Parser.git'
+  pod 'M3U8Kit2', :git => 'https://github.com/aikdong/M3U8Paser.git'
   pod 'mAVr', :path => '../'
 
   target 'mAVr_Tests' do
