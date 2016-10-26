@@ -7,7 +7,7 @@
 //
 
 #import <Foundation/Foundation.h>
-#import <AVFoundation/AVAudioSession.h>
+#import <AVFoundation/AVFoundation.h>
 #import "M3U8Kit.h"
 #import "MAVRPlayer.h"
 #import "MAVRPlayerDelegate.h"
@@ -36,7 +36,19 @@ static void *kPlayerExternalPlaybackContext = (void *) 128;
 static void *kPlayerDurationContext = (void *) 256;
 static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 
+#if TARGET_OS_TV
+
 @interface MAVRPlayer() <MAVRPlayerDelegate, AVAudioPlayerDelegate>
+
+#else
+
+@interface MAVRPlayer() <MAVRPlayerDelegate, AVAudioPlayerDelegate, AVPictureInPictureControllerDelegate>
+
+@property (readonly) AVPictureInPictureController* pipController;
+
+#endif
+
+
 -(void)notify:(MAVRPlayerNotificationType)notificationType;
 -(void)callHandlers:(NSMutableArray*)blocks forType:(MAVRPlayerNotificationType)type;
 -(void)bufferFullHandler;
@@ -53,15 +65,16 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 -(void)removeBoundaryObservers;
 -(void)removeCurrentTimeObserver;
 -(void)removeStartObserver;
--(void)removeEndObserver;
 -(void)handleReady;
 -(void)handleComplete;
+-(void)handleError;
+-(void)startStallTimer;
+-(void)stopStallTimer;
 
 #pragma mark M3U8 methods
 -(NSString*)getStreamUrlForIndex:(NSUInteger)index;
 
 #pragma mark Debug methods
--(NSString*)stringifyState:(MAVRPlayerState)state;
 -(NSString*)stringifyNotification:(MAVRPlayerNotificationType)notification;
 -(NSString*)getFlagsString;
 -(NSString*)stringifyAVPlayerItemStatus:(AVPlayerItemStatus)status;
@@ -78,7 +91,6 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	NSTimer* stallTimer;
 	id observerCurrentTime;
 	id observerStart;
-	id observerEnd;
 	
 	BOOL started;
 	BOOL completed;
@@ -87,22 +99,36 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	BOOL waitForComplete;
 	BOOL switching;
 	BOOL readdAfterReturnToForeground;
+	BOOL autoPlayAfterReturnToForeground;
 	BOOL ready;
+	BOOL waitForLegalPause;
+	BOOL seekNotAllowed;
+	
 	
 	double seekToTime;
 	double marginBeforeEnd;
+	
+	CGSize _bufferRange;
+	
+	float previousRate;
+	
+	AVPlayerItem* emptyItem;
+	
 }
 
 #pragma mark lifecycle
 
 -(id)initWithView:(UIView*)parent {
+	
 	self = [super init];
 	
 	if (self) {
-		started = switching = seeking = completed = waitForResume = waitForComplete = ready = NO;
 		
-		marginBeforeEnd = 0.6;
+		started = switching = seeking = completed = waitForResume = waitForComplete = ready = waitForLegalPause = seekNotAllowed = NO;
 		
+		emptyItem = [AVPlayerItem playerItemWithURL:nil];
+		
+		marginBeforeEnd = 0.099;
 		registeredHandlers = [NSMutableDictionary dictionaryWithCapacity:1];
 		
 		_player = [[AVPlayer alloc] init];
@@ -112,72 +138,70 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		_layer.videoGravity = AVLayerVideoGravityResizeAspect;
 		[parent.layer addSublayer:_layer];
 		
+#if TARGET_OS_TV
+#else
+		
+		if( [AVPictureInPictureController isPictureInPictureSupported] ) {
+			_pipController = [[AVPictureInPictureController alloc] initWithPlayerLayer:_layer];
+			_pipController.delegate = self;
+		}
+		
+#endif
+		
+		
+		
 		NSNotificationCenter* dispatcher = [NSNotificationCenter defaultCenter];
 		
 		[dispatcher addObserver:self selector:@selector(applicationWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
 		[dispatcher addObserver:self selector:@selector(applicationDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
-		//[dispatcher addObserver:self selector:@selector(handlePlayToEndTime:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
+		[dispatcher addObserver:self selector:@selector(handlePlayToEndTime:) name:AVPlayerItemDidPlayToEndTimeNotification object:nil];
 		[dispatcher addObserver:self selector:@selector(handleFailedToPlayToEndTime:) name:AVPlayerItemFailedToPlayToEndTimeNotification object:_player];
 		[dispatcher addObserver:self selector:@selector(handlePlaybackStalled:) name:AVPlayerItemPlaybackStalledNotification object:_player];
 		
-		NSError *setCategoryError = nil;
-		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error: &setCategoryError];
+		NSError *error = nil;
+		[[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error: &error];
+		[[AVAudioSession sharedInstance] setActive:YES error:&error];
 		
 		[_player addObserver:self forKeyPath:kMAVR_CURRENT_ITEM	options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:kPlayerItemContext];
 		[_player addObserver:self forKeyPath:kMAVR_RATE			options:NSKeyValueObservingOptionNew	context:kPlayerRateContext];
 		[_player addObserver:self forKeyPath:kMAVR_EXTERNAL_PLAYBACK_ACTIVE options:NSKeyValueObservingOptionNew context:kPlayerExternalPlaybackContext];
 	}
-
+	
 	return self;
+}
+
+-(double)bufferTime
+{
+	//check currentTime to hide buffer after backseek
+	//check duration because the real is a little different
+	return _currentTime < _bufferRange.width? 0: MAX(0, _bufferRange.width + (_bufferRange.height>_duration-1? _duration: _bufferRange.height)- _currentTime);
+	
+}
+
+-(BOOL) isLive {
+	return isnan(_duration);
 }
 
 -(void)setFrame:(CGRect)frame {
 	
 	_layer.frame = frame;
+	
 }
 
 -(void)setVisible:(BOOL)value {
-	
 	[_layer setHidden:!value];
+	
 }
 
 -(void)resetPlayer {
 	
-	if (_player.currentItem) {
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_STATUS context:kPlayerItemStatusContext];
-		} @catch (id anException) {}
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_LOADED_TIME_RANGES context:kPlayerBufferChangeContext];
-		} @catch (id anException) {}
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_BUFFER_EMPTY context:kPlayerBufferEmptyContext];
-		} @catch (id anException) {}
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_PLAYBACK_LIKELY_KEEP_UP context:kPlaybackLikelyToKeepUpContext];
-		} @catch (id anException) {}
-
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_BUFFER_FULL context:kPlayerBufferFullContext];
-		} @catch (id anException) {}
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_PRESENTATION_SIZE context:kPlayerVideoSizeContext];
-		} @catch (id anException) {}
-		
-		@try {
-			[_player.currentItem removeObserver:self forKeyPath:kMAVR_DURATION context:kPlayerDurationContext];
-		} @catch (id anException) {}
-	}
+	[_player cancelPendingPrerolls];
 	
 	[self stopStallTimer];
 	[self removeBoundaryObservers];
 	
 	_currentStreamIndex = 0;
+	previousRate = 0.0;
 	_playlist = nil;
 	started = NO;
 	completed = NO;
@@ -185,6 +209,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	waitForComplete = NO;
 	waitForResume = NO;
 	switching = NO;
+	
 }
 
 
@@ -192,6 +217,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	registeredHandlers = nil;
 	
+	[_player replaceCurrentItemWithPlayerItem:emptyItem];
 	[self resetPlayer];
 	
 	@try {
@@ -211,8 +237,17 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	[_layer removeFromSuperlayer];
 	
+#if TARGET_OS_TV
+#else
+	
+	_pipController.delegate = nil;
+	_pipController = nil;
+	
+#endif
+	
 	_layer = nil;
 	_player = nil;
+	
 }
 
 #pragma mark public API
@@ -253,6 +288,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		return;
 	
 	_state = MAVRPlayerStateLoading;
+	previousRate = 0.0;
 	
 	[self notify:MAVRPlayerNotificationLoading];
 	
@@ -261,6 +297,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	AVPlayerItem* item = [[AVPlayerItem alloc] initWithAsset:_asset];
 	
 	[_player replaceCurrentItemWithPlayerItem:item];
+	
 }
 
 -(void)loadWithContent:(NSString *)content {
@@ -273,9 +310,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	if (self.streamsCount <= 0) {
 		
-		_state = MAVRPlayerStateError;
-
-		[self notify:MAVRPlayerNotificationError];
+		[self handleError];
 		
 	} else {
 		
@@ -302,22 +337,41 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	AVPlayerItem* item = [AVPlayerItem playerItemWithAsset:_asset];
 	[item seekToTime:_player.currentTime toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
 	[_player replaceCurrentItemWithPlayerItem:item];
+	
 }
 
 
 -(void)play {
-
-	_player.rate = 1.0;
+	
+	if( _player.currentItem ) {
+		
+		[_player play];
+		
+		if( self.isLive && !seeking ) {
+			
+			CMTimeRange seekableRange = [_player.currentItem.seekableTimeRanges.lastObject CMTimeRangeValue];
+			CGFloat seekableStart = CMTimeGetSeconds(seekableRange.start);
+			CGFloat seekableDuration = CMTimeGetSeconds(seekableRange.duration);
+			CGFloat livePosition = seekableStart + seekableDuration;
+			
+			[self seek:livePosition];
+			
+		}
+		
+	}
+	
 }
 
 -(void)pause {
-
-	_player.rate = 0.0;
+	
+	waitForLegalPause = YES;
+	[_player pause];
+	
 }
 
 -(void)seek:(double)time {
 	
-	if (ready && !started)
+	if ( ( ready && !started ) || (seekNotAllowed && time != 0.0) || time < 0 )
 		return;
 	
 	if (!completed && !switching && !seeking) {
@@ -325,17 +379,16 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		waitForResume = _player.rate != 0.0;
 		
 		seeking = YES;
-
+		
 		if (waitForResume)
 			[self pause];
 		
 		[self notify:MAVRPlayerNotificationSeekingStart];
 	}
 	
-	int32_t timeScale = _player.currentItem.asset.duration.timescale;
+	int32_t timeScale = isnan(_duration) ? 1 : _player.currentItem.asset.duration.timescale;
 	
-	if (time >= _duration - marginBeforeEnd) {
-		
+	if ( !isnan(_duration) && _duration > 0 && floor(time) >= floor(_duration - marginBeforeEnd) ) {
 		[self handleComplete];
 		return;
 	}
@@ -347,27 +400,32 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	[_player seekToTime:CMTimeMakeWithSeconds(time, timeScale) completionHandler:^(BOOL finished) {
 		
 		if (finished) {
-
+			
 			if (switching) {
 				
 				switching = NO;
 				
 				[self notify:MAVRPlayerNotificationSwitchQualityEnd];
-			
+				
 			} else if (seeking) {
-			
+				
 				[self notify:MAVRPlayerNotificationSeekingEnd];
 			}
-			
 			
 			if (waitForResume)
 				[self play];
 			
 			seeking = NO;
 			
-			if (_state == MAVRPlayerStateCompleted) {
+			if ( ( started || completed ) && _state == MAVRPlayerStateCompleted ) {
+				
 				started = NO;
 				[self notify:MAVRPlayerNotificationCompleted];
+				
+			} else if( started && previousRate == 1.0 ) {
+				
+				[self notify:MAVRPlayerNotificationPlaying];
+				
 			}
 		}
 	}];
@@ -375,14 +433,16 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 
 -(void)stop {
 	
-	if (_player.rate != 0.0)
-		_player.rate = 0.0;
-
-	[_player replaceCurrentItemWithPlayerItem:nil];
+	if( !_player.currentItem )
+		return;
 	
+	if (_player.rate != 0.0)
+		[self pause];
+	
+	[_player replaceCurrentItemWithPlayerItem:emptyItem];
 	[self resetPlayer];
+	
 }
-
 
 #pragma mark internal handlers
 
@@ -394,40 +454,49 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		
 		[_layer setPlayer:_player];
 		readdAfterReturnToForeground = NO;
-	
+		
 	} else {
-
+		
 		NSError *activationError = nil;
 		[[AVAudioSession sharedInstance] setActive:YES error:&activationError];
+		
+	}
+	
+	if (autoPlayAfterReturnToForeground) {
+		if( _layer.hidden )
+			_layer.hidden = NO;
+		[self addBoundaryObservers];
+		//[self play];
 	}
 }
 
 -(void)applicationWillResignActive:(NSNotification*)notify {
-
+	
 	[self externalPlaybackActiveHandler];
-
+	
+	autoPlayAfterReturnToForeground = ( _player.rate != 0.0 ) && !waitForLegalPause;
+	
 	if (_player.isExternalPlaybackActive/* && _player.rate != 0.0*/) {
 		
 		[_layer setPlayer:nil];
 		readdAfterReturnToForeground = YES;
-	
-	} else {
-
-		NSError *activationError = nil;
+		
+	} else if(!self.pipActive) {
+		
 		if (_player.rate != 0.0)
 			[self pause];
-		[[AVAudioSession sharedInstance] setActive:NO error:&activationError];
+		
+		/*
+		 NSError *activationError = nil;
+		 [[AVAudioSession sharedInstance] setActive:NO error:&activationError];
+		 */
 	}
 }
 
-/*-(void)handlePlayToEndTime:(NSNotification*)notify {
-	NSLog(@"handlePlayToEndTime");
-	completed = YES;
-	
-	_state = MAVRPlayerStateCompleted;
-
-	[self notify:MAVRPlayerNotificationCompleted];
-}*/
+-(void)handlePlayToEndTime:(NSNotification*)notify {
+	if ([notify object] == _player.currentItem)
+		[self handleComplete];
+}
 
 -(void)handlePlaybackStalled:(NSNotification*)notify {
 	NSLog(@"handlePlaybackStalled");//inet is down
@@ -442,15 +511,16 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 #pragma mark internal KVO
 
 -(void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
-
+	
 	void (^KVOBlock)() = ^(NSDictionary* change) {
 		if (context == kPlayerItemStatusContext)
 			[self statusChanged:[[change valueForKey:@"new"] integerValue]];
 		else if (context == kPlayerItemContext)
 			[self itemReplaced:[change valueForKey:@"old"] by:[change valueForKey:@"new"]];
-		else if (context == kPlayerRateContext)
+		else if (context == kPlayerRateContext) {
 			[self rateChanged:_player.rate];
-		else if (context == kPlayerBufferChangeContext)
+			[self bufferChanged:_player.currentItem.loadedTimeRanges];
+		} else if (context == kPlayerBufferChangeContext)
 			[self bufferChanged:_player.currentItem.loadedTimeRanges];
 		else if (context == kPlayerBufferEmptyContext)
 			[self bufferEmptyHandler];
@@ -474,13 +544,33 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	if (oldItem && oldItem != (id)[NSNull null]) {
 		
-		[oldItem removeObserver:self forKeyPath:kMAVR_STATUS		context:kPlayerItemStatusContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_LOADED_TIME_RANGES context:kPlayerBufferChangeContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_BUFFER_EMPTY context:kPlayerBufferEmptyContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_PLAYBACK_LIKELY_KEEP_UP context:kPlaybackLikelyToKeepUpContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_BUFFER_FULL context:kPlayerBufferFullContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_PRESENTATION_SIZE context:kPlayerVideoSizeContext];
-		[oldItem removeObserver:self forKeyPath:kMAVR_DURATION		context:kPlayerDurationContext];
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_STATUS context:kPlayerItemStatusContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_LOADED_TIME_RANGES context:kPlayerBufferChangeContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_BUFFER_EMPTY context:kPlayerBufferEmptyContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_PLAYBACK_LIKELY_KEEP_UP context:kPlaybackLikelyToKeepUpContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_BUFFER_FULL context:kPlayerBufferFullContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_PRESENTATION_SIZE context:kPlayerVideoSizeContext];
+		} @catch (id anException) {}
+		
+		@try {
+			[oldItem removeObserver:self forKeyPath:kMAVR_DURATION		context:kPlayerDurationContext];
+		} @catch (id anException) {}
 	}
 	
 	if (newItem && newItem != (id)[NSNull null]) {
@@ -492,11 +582,24 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		[newItem addObserver:self forKeyPath:kMAVR_BUFFER_FULL	options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:kPlayerBufferFullContext];
 		[newItem addObserver:self forKeyPath:kMAVR_PRESENTATION_SIZE	options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:kPlayerVideoSizeContext];
 		[newItem addObserver:self forKeyPath:kMAVR_DURATION	options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:kPlayerDurationContext];
+		
 	}
 }
 
 -(void)rateChanged:(float)newRate {
-
+	
+	if( previousRate == newRate ) {
+		
+		if( waitForLegalPause && previousRate == 0 )
+			waitForLegalPause = NO;
+		
+		return;
+	}
+	
+	
+	if (started || completed)
+		previousRate = newRate;
+	
 	if (started && !completed) {
 		
 		if (newRate == 0.0) {
@@ -506,9 +609,20 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 			
 			if (!seeking) {
 				
-				_state = MAVRPlayerStatePaused;
-			
-				[self notify:MAVRPlayerNotificationPaused];
+				if ( waitForLegalPause || self.pipActive ) {
+					
+					waitForLegalPause = NO;
+					_state = MAVRPlayerStatePaused;
+					
+					[self notify:MAVRPlayerNotificationPaused];
+					
+				} else {
+					
+					_state = MAVRPlayerStateBuffering;
+					
+					[self notify:MAVRPlayerNotificationBufferingStart];
+					[self play];
+				}
 			}
 			
 		} else if (!seeking || _state == MAVRPlayerStateBuffering) {
@@ -521,37 +635,45 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 				
 				waitForResume = NO;
 				
-				if (oldState == MAVRPlayerStateBuffering)
-					[self notify:MAVRPlayerNotificationBufferingEnd];
 			}
 			
-			[self notify:MAVRPlayerNotificationPlaying];
-		}
-		
-	} else if (!started && completed) {
-		
-		if (newRate == 1.0) {
+			if (oldState == MAVRPlayerStateBuffering)
+				[self notify:MAVRPlayerNotificationBufferingEnd];
 			
-			completed = NO;
-			[self addBoundaryObservers];
+			[self notify:MAVRPlayerNotificationPlaying];
+			
 		}
+		
+	} else if (!started && newRate == 1.0) {
+		
+		completed = NO;
+		previousRate = newRate;
+		[self addBoundaryObservers];
+		
 	}
 }
 
 -(void)playbackLikelyToKeepUpHandler {
-
+	
 	if (_player.currentItem) {
-
+		
 		if (!_player.currentItem.playbackLikelyToKeepUp && _state == MAVRPlayerStatePlaying) {
 			//HACK: We have a problem with playlists, coz real duration slightly different
-			if (_duration - _currentTime <= 8.0)
+			
+			if ( self.isLive || _duration - _currentTime > /*8.0*/marginBeforeEnd)
+				[self startStallTimer];
+			else if (!seeking)
 				[self handleComplete];
-			else
-				stallTimer = [NSTimer scheduledTimerWithTimeInterval:kMAVR_STALL_TIME  target:self selector:@selector(stallTimerHandler:) userInfo:nil repeats:NO];
-		
-		} else if (_player.currentItem.playbackLikelyToKeepUp && stallTimer) {
-		
+			
+		} else if (_player.currentItem.playbackLikelyToKeepUp) {
+			
 			[self stopStallTimer];
+			
+			if (_state == MAVRPlayerStateBuffering) {
+				
+				_state = MAVRPlayerStatePlaying;
+				[self notify:MAVRPlayerNotificationBufferingEnd];
+			}
 		}
 	}
 }
@@ -562,13 +684,23 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		
 		[self stopStallTimer];
 		
-		if (!_player.currentItem.playbackLikelyToKeepUp)
-			[self notify:MAVRPlayerNotificationError];
+		if (seeking)
+			[self startStallTimer];
+		else if (!_player.currentItem.playbackLikelyToKeepUp)
+			[self handleError];
 	}
 }
 
--(void)stopStallTimer {
+-(void)startStallTimer {
+	
+	if (stallTimer)
+		[self stopStallTimer];
+	
+	stallTimer = [NSTimer scheduledTimerWithTimeInterval:kMAVR_STALL_TIME  target:self selector:@selector(stallTimerHandler:) userInfo:nil repeats:NO];
+}
 
+-(void)stopStallTimer {
+	
 	if (stallTimer) {
 		[stallTimer invalidate];
 		stallTimer = nil;
@@ -576,7 +708,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 }
 
 -(void)statusChanged:(AVPlayerItemStatus)newStatus {
-	//NSLog(@"statusChanged %@ %@ %@", [self stringifyAVPlayerItemStatus:newStatus], [self getFlagsString], [self stringifyState:_state]);
+	
 	if (waitForComplete) {
 		
 		waitForComplete = NO;
@@ -586,36 +718,30 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	if (newStatus == AVPlayerItemStatusFailed) {
 		
-		_state = MAVRPlayerStateError;
-		[self notify:MAVRPlayerNotificationError];
+		[self handleError];
 		
 	} else if (newStatus == AVPlayerItemStatusReadyToPlay) {
-
+		
 		if (!seeking && !started && !completed) {
 			
 			if (_player.currentItem) {
-					
+				
 				_currentTime = CMTimeGetSeconds(_player.currentItem.currentTime);
 				_duration = CMTimeGetSeconds(_asset.duration);
 			}
-				
+			
 			if (!ready) {
 				[self handleReady];
 			}
-		
+			
 		} else if (completed) {
 			
 			started = NO;
-			//completed = NO;
-			
-			//[self handleReady];
 			
 		} else if (switching) {
-
+			
 			switching = NO;
 			[self notify:MAVRPlayerNotificationSwitchQualityEnd];
-			
-			//[self seek:seekToTime];
 			
 		} else if (started && waitForResume && _state == MAVRPlayerStateBuffering) {
 			
@@ -628,43 +754,43 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	if (timeRanges && timeRanges.count > 0) {
 		
-		CMTimeRange range;
-		[timeRanges.lastObject getValue:&range];
-
-		_bufferTime = MAX(0, CMTimeGetSeconds(range.start) + CMTimeGetSeconds(range.duration) - _currentTime);
-		
+		CMTimeRange range = [timeRanges.lastObject CMTimeRangeValue];
+		_bufferRange = CGSizeMake(CMTimeGetSeconds(range.start), CMTimeGetSeconds(range.duration));
 		if (_duration != 0.0 && !completed && _state != MAVRPlayerStateCompleted)
 			[self notify:MAVRPlayerNotificationBufferChange];
 	}
 }
 
 -(void)bufferEmptyHandler {
-
-	_bufferTime = 0;
-
+	
+	_bufferRange = CGSizeMake(0, 0);
+	
 	if (_state == MAVRPlayerStatePlaying) {
-
+		
 		_state = MAVRPlayerStateBuffering;
 		[self notify:MAVRPlayerNotificationBufferingStart];
 	}
 }
 
 -(void)externalPlaybackActiveHandler {
-
+	
 	if (_isExternalPlayback != _player.isExternalPlaybackActive) {
-
+		
 		_isExternalPlayback = _player.externalPlaybackActive;
+		
+		if (!_isExternalPlayback && ![_layer player])
+			[_layer setPlayer:_player];
+		
 		[self notify:MAVRPlayerNotificationExternalPlaybackActive];
 	}
 }
 
 -(void)durationChangeHandler {
-	
 	_duration = CMTimeGetSeconds(_player.currentItem.duration);
 }
 
 -(void)bufferFullHandler {
-	
+	//NSLog(@"bufferFullHandler %@ %@", [self getFlagsString], [self stringifyState:_state]);
 	if (_state == MAVRPlayerStateBuffering && !switching) {
 		
 		_state = MAVRPlayerStatePlaying;
@@ -676,7 +802,9 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 #pragma mark internal API
 
 -(void)notify:(MAVRPlayerNotificationType)notificationType {
+	
 	//NSLog(@"playernotification %@ %@", [self stringifyNotification:notificationType], [self stringifyState:_state]);
+	
 	NSMutableArray *handlersForNotification = [registeredHandlers objectForKey:[NSNumber numberWithInt:notificationType]];
 	
 	if (handlersForNotification && [handlersForNotification count] > 0) {
@@ -709,25 +837,24 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		if (sself) {
 			
 			[sself removeStartObserver];
-			sself->started = YES;
-			sself->_state = MAVRPlayerStatePlaying;
-			[sself notify:MAVRPlayerNotificationStarted];
+			
+			if( !sself->started ) {
+				
+				sself->started = YES;
+				sself->seekNotAllowed = NO;
+				sself->_state = MAVRPlayerStatePlaying;
+				[sself notify:MAVRPlayerNotificationStarted];
+				
+			}
+			
 		}
-	};
-	
-	void (^endedBlock)() = ^() {
-		
-		MAVRPlayer *sself = wself;
-		
-		if (sself)
-			[sself handleComplete];
 	};
 	
 	void (^currentTimeBlock)() = ^(CMTime time) {
 		
 		MAVRPlayer* sself = wself;
 		double newTime = CMTimeGetSeconds(time);
-
+		
 		if (sself->_duration > 0 && sself->_duration - newTime <= sself->marginBeforeEnd && !sself->completed) {
 			
 			if (!seeking)
@@ -739,21 +866,30 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 			
 			sself->_currentTime = CMTimeGetSeconds(time);
 			
-			if (sself->started && sself->_state != MAVRPlayerStatePaused && !sself->seeking && !sself->completed)
+			if (sself->started && sself->_state != MAVRPlayerStatePaused && !sself->seeking && !sself->completed){
 				[sself notify:MAVRPlayerNotificationCurrentTimeChange];
+				[sself notify:MAVRPlayerNotificationBufferChange];
+			}
 		}
 	};
-
-	observerCurrentTime = [_player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, NSEC_PER_SEC) queue:nil usingBlock:currentTimeBlock];
-	observerStart = [_player addBoundaryTimeObserverForTimes:@[[NSValue valueWithCMTime:CMTimeMake(1, 3)]] queue:nil usingBlock:startedBlock];
-	observerEnd = [_player addBoundaryTimeObserverForTimes:@[[NSValue valueWithCMTime:CMTimeMakeWithSeconds(_duration - marginBeforeEnd, 1.0)]] queue:nil usingBlock:endedBlock];
+	
+	observerCurrentTime = [_player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.1, NSEC_PER_SEC) queue:nil usingBlock:currentTimeBlock];
+	
+	UIApplicationState state = [[UIApplication sharedApplication] applicationState];
+	
+	if (state == UIApplicationStateBackground || state == UIApplicationStateInactive) {
+		seekNotAllowed = NO;
+		autoPlayAfterReturnToForeground = YES;
+	} else {
+		observerStart = [_player addPeriodicTimeObserverForInterval:CMTimeMake(1, 2) queue:NULL usingBlock:startedBlock];
+	}
+	
 }
 
 -(void)removeBoundaryObservers {
-
+	
 	[self removeCurrentTimeObserver];
 	[self removeStartObserver];
-	[self removeEndObserver];
 }
 
 -(void)removeCurrentTimeObserver {
@@ -780,18 +916,6 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	}
 }
 
--(void)removeEndObserver {
-	
-	if (observerEnd != nil) {
-		
-		@try { [_player removeTimeObserver:observerEnd];}
-		
-		@catch (id anException) {}
-		
-		observerEnd = nil;
-	}
-}
-
 -(void)handleReady {
 	
 	[self addBoundaryObservers];
@@ -804,15 +928,18 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 }
 
 -(void)handleComplete {
-	//NSLog(@"handleComplete %@", [self getFlagsString]);
+	
+	if( completed )
+		return;
+	
 	[self removeBoundaryObservers];
 	[self stopStallTimer];
-
+	
 	if (_state == MAVRPlayerStateBuffering)
 		[self notify:MAVRPlayerNotificationBufferingEnd];
-
+	
 	completed = YES;
-
+	
 	if (seeking) {
 		
 		seeking = NO;
@@ -821,19 +948,26 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	waitForResume = NO;
 	ready = NO;
-
-	_currentTime = 0;
-	_bufferTime = 0;
-	_state = MAVRPlayerStateCompleted;
 	
-	//[self notify:MAVRPlayerNotificationCompleted];
+	_currentTime = 0;
+	_bufferRange = CGSizeMake(0, 0);
+	_state = MAVRPlayerStateCompleted;
 	
 	if (started)
 		[self pause];
 	
-	[self seek:0];
+	seekNotAllowed = YES;
+	[self seek:0.0];
 }
 
+-(void)handleError {
+	
+	if (_state == MAVRPlayerStateBuffering)
+		[self notify:MAVRPlayerNotificationBufferingEnd];
+	
+	_state = MAVRPlayerStateError;
+	[self notify:MAVRPlayerNotificationError];
+}
 
 #pragma mark M3U8 methods
 
@@ -911,7 +1045,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	switch (notification) {
 		case MAVRPlayerNotificationBufferChange:
 			s = @"MAVRPlayerNotificationBufferChange ";
-			s = [s stringByAppendingString:[[NSNumber numberWithDouble:_bufferTime] stringValue]];
+			s = [s stringByAppendingString:NSStringFromCGSize(_bufferRange)];
 			break;
 		case MAVRPlayerNotificationBufferingEnd:
 			s = @"MAVRPlayerNotificationBufferingEnd";
@@ -974,22 +1108,15 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 }
 
 -(NSString*)getFlagsString {
-	NSString* s = @"started=";
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:started] stringValue]];
-	s = [s stringByAppendingString:@" ready="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:ready] stringValue]];
-	s = [s stringByAppendingString:@" completed="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:completed] stringValue]];
-	s = [s stringByAppendingString:@" seeking="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:seeking] stringValue]];
-	s = [s stringByAppendingString:@" waitForResume="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:waitForResume] stringValue]];
-	s = [s stringByAppendingString:@" switching="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:switching] stringValue]];
-	s = [s stringByAppendingString:@" waitForComplete="];
-	s = [s stringByAppendingString:[[NSNumber numberWithBool:waitForComplete] stringValue]];
-	
-	return s;
+	return [NSString stringWithFormat:@"ready=%@ started=%@ completed=%@ seeking=%@ waitForResume=%@ switching=%@ waitForComplete=%@",
+			[[NSNumber numberWithBool:ready] stringValue],
+			[[NSNumber numberWithBool:started] stringValue],
+			[[NSNumber numberWithBool:completed] stringValue],
+			[[NSNumber numberWithBool:seeking] stringValue],
+			[[NSNumber numberWithBool:waitForResume] stringValue],
+			[[NSNumber numberWithBool:switching] stringValue],
+			[[NSNumber numberWithBool:waitForComplete] stringValue]
+			];
 }
 
 -(NSString*)stringifyAVPlayerItemStatus:(AVPlayerItemStatus)status {
@@ -1013,4 +1140,82 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	}
 	return s;
 }
+
+#pragma mark - Pip delegate
+
+-(BOOL) pipActive {
+	
+#if TARGET_OS_TV
+	return NO;
+#else
+	return _pipController && _pipController.isPictureInPictureActive;
+#endif
+	
+}
+
+-(BOOL) pipAvailable {
+#if TARGET_OS_TV
+	return NO;
+#else
+	return [AVPictureInPictureController isPictureInPictureSupported];
+#endif
+	
+}
+
+-(BOOL)startPictureInPicture {
+#if TARGET_OS_TV
+	return NO;
+#else
+	if( _pipController.isPictureInPicturePossible && !_pipController.isPictureInPictureActive) {
+		[_pipController startPictureInPicture];
+		return YES;
+	}
+	
+	return NO;
+#endif
+	
+	
+}
+
+-(BOOL)stopPictureInPicture {
+#if TARGET_OS_TV
+	return NO;
+#else
+	if( _pipController.isPictureInPictureActive ) {
+		[_pipController stopPictureInPicture];
+		return YES;
+	}
+	
+	return NO;
+#endif
+	
+	
+}
+
+#ifndef TARGET_OS_TV
+
+- (void)pictureInPictureControllerWillStopPictureInPicture:(AVPictureInPictureController *)pictureInPictureController {
+	
+	UIApplicationState state = [[UIApplication sharedApplication] applicationState];
+	
+	if ( ( pictureInPictureController.isPictureInPictureSuspended || !pictureInPictureController.isPictureInPictureActive ) &&
+		( state == UIApplicationStateBackground || state == UIApplicationStateInactive ) )
+	{
+		autoPlayAfterReturnToForeground = NO;
+		[self pause];
+	}
+	
+	
+}
+
+- (void)pictureInPictureController:(AVPictureInPictureController *)pictureInPictureController restoreUserInterfaceForPictureInPictureStopWithCompletionHandler:(void (^)(BOOL restored))completionHandler {
+	
+	_layer.zPosition = 1;
+	
+	completionHandler(YES);
+	
+}
+#endif
+
+
 @end

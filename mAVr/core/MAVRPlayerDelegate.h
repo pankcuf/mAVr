@@ -27,5 +27,6 @@
 -(void)switchStream:(NSUInteger)index;
 
 -(NSString*)stringifyState:(MAVRPlayerState)state;
+-(NSString*)stringifyNotification:(MAVRPlayerNotificationType)notification;
 
 @end

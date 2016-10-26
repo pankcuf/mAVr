@@ -7,6 +7,7 @@
 //
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
+#import <AVKit/AVKit.h>
 
 typedef void (^MAVRPlayerBlockHandler)();
 
@@ -39,14 +40,16 @@ typedef enum {
 	MAVRPlayerNotificationVideoSizeChange,
 	MAVRPlayerNotificationExternalPlaybackActive,
 	MAVRPlayerNotificationError,
-
+	
 } MAVRPlayerNotificationType;
 
 @interface MAVRPlayer : NSObject
 
+@property (readonly) BOOL isLive;
 @property (readonly) double duration;
 @property (readonly) double currentTime;
 @property (readonly) double bufferTime;
+
 @property (readonly) NSUInteger currentStreamIndex;
 
 @property (readonly) NSUInteger streamsCount;
@@ -70,8 +73,16 @@ typedef enum {
 -(void)stop;
 -(void)switchStream:(NSUInteger)index;
 
+@property (readonly) BOOL pipActive;
+@property (readonly) BOOL pipAvailable;
+
+-(BOOL)startPictureInPicture;
+-(BOOL)stopPictureInPicture;
+
+
 -(NSString*)lowestQualityUrl;
 
 -(NSString*)stringifyState:(MAVRPlayerState)state;
+-(NSString*)stringifyNotification:(MAVRPlayerNotificationType)notification;
 
 @end

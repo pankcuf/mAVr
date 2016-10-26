@@ -52,17 +52,23 @@
 	[_player addHandler:MAVRPlayerNotificationCompleted withBlock:handler];
 	[_player addHandler:MAVRPlayerNotificationError withBlock:handler];
 
-	NSString* str = [NSString stringWithFormat:@"%@\n%@\n%@\n%@\n%@\n%@\n",
-					 @"#EXTM3U",
-					 @"#EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=679000, CODECS=\"avc1.42c01e, mp4a.40.5\"\n"
-					 @"http://video-1-19.rutube.ru/hls-vod/55JtF70d5nGRHOiWDoL4RQ/1424302113/7/n2vol2/6d44bb01998a422fb7079b4c1d36bd05.mp4.m3u8?i=512x288_679",
-					 @"#EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=1032000, CODECS=\"avc1.4d401f, mp4a.40.5\"",
-					 @"http://video-1-19.rutube.ru/hls-vod/RhwhNW08HHtrIFaMbQB1cA/1424302113/7/n5vol1/940ce4f7a4a74ef492c81311e7d8e283.mp4.m3u8?i=768x432_1032",
-					 @"#EXT-X-STREAM-INF:PROGRAM-ID=1, BANDWIDTH=1261000, CODECS=\"avc1.4d401f, mp4a.40.2\"",
-					 @"http://video-1-19.rutube.ru/hls-vod/r5tlgEhp0aquj1JtOlpqHg/1424302113/7/n5vol1/e890f2a365274a5a860852b9b6c102c8.mp4.m3u8?i=992x544_1261"
-					 ];
+	NSString *url = @"http://bl.rutube.ru/live/LIVE/1073/HLS/SD/-vqFBvS2HC990HjL3xnucg/1477499295/S-a:57d6a8f7fe79acea718b4596/playlist_v2.m3u8?audio_only=1";
+	
+	[[[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:url] completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+		
+		
+		
+		NSString* newStr = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
 
-	[_player loadWithContent:str];
+		
+		[_player loadWithContent:newStr];
+
+	}] resume];
+
+}
+
+-(void)loadRootManifest:(NSString*)url {
+	
 }
 
 -(void)playNext {
@@ -81,10 +87,6 @@
 	[mainView setNeedsLayout];
 
 	//NSLog(@"Orientation changed %ld", orientation);
-}
-
--(NSUInteger)supportedInterfaceOrientations {
-	return UIInterfaceOrientationMaskAll;
 }
 
 - (BOOL)shouldAutorotate {
@@ -110,16 +112,6 @@
 
 	[[UIDevice currentDevice] endGeneratingDeviceOrientationNotifications];
 	[[NSNotificationCenter defaultCenter] removeObserver:self name:UIDeviceOrientationDidChangeNotification object:nil];
-}
-
--(void)viewWillLayoutSubviews {
-	//NSLog(@"viewWillLayoutSubviews");
-	[super viewWillLayoutSubviews];
-}
-
-- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-	//NSLog(@"viewWillTransitionToSize(%@) with %@", NSStringFromCGSize(size), coordinator);
-	[super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 }
 
 @end
