@@ -126,7 +126,9 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		
 		started = switching = seeking = completed = waitForResume = waitForComplete = ready = waitForLegalPause = seekNotAllowed = NO;
 		
-		emptyItem = [AVPlayerItem playerItemWithURL:nil];
+		id nilItem = nil;
+		
+		emptyItem = [AVPlayerItem playerItemWithURL:nilItem];
 		
 		marginBeforeEnd = 0.099;
 		registeredHandlers = [NSMutableDictionary dictionaryWithCapacity:1];
