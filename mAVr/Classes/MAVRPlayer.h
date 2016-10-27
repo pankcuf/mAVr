@@ -9,7 +9,6 @@
 #import <UIKit/UIKit.h>
 #import <AVKit/AVKit.h>
 
-typedef void (^MAVRPlayerBlockHandler)();
 
 typedef enum {
 	MAVRPlayerStateLoading,
@@ -42,6 +41,10 @@ typedef enum {
 	MAVRPlayerNotificationError,
 	
 } MAVRPlayerNotificationType;
+
+@protocol MAVRPlayerDelegate;
+
+typedef void (^MAVRPlayerBlockHandler)(id<MAVRPlayerDelegate> delegate, MAVRPlayerNotificationType notificationType);
 
 @interface MAVRPlayer : NSObject
 
