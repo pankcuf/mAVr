@@ -72,6 +72,7 @@ typedef void (^MAVRPlayerBlockHandler)(id<MAVRPlayerDelegate> delegate, MAVRPlay
 -(void)loadWithContent:(NSString *)content;
 -(void)pause;
 -(void)play;
+-(void)seekToLive;
 -(void)seek:(double)time;
 -(void)stop;
 -(void)switchStream:(NSUInteger)index;

@@ -23,6 +23,7 @@
 
 -(void)pause;
 -(void)play;
+-(void)seekToLive;
 -(void)seek:(double)time;
 -(void)switchStream:(NSUInteger)index;
 

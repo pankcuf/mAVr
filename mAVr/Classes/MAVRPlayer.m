@@ -343,24 +343,26 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 
 -(void)play {
 	
-	if( _player.currentItem ) {
+	if (_player.currentItem) {
 		
 		[_player play];
 		
-		if( self.isLive && !seeking && !started) {
+		if (self.isLive && !seeking && !started) {
 			
-			[self seek:[self getLiveTime] - marginBeforeEnd];
+			[self seekToLive];
 		}
-		
 	}
-	
 }
 
 -(void)pause {
 	
 	waitForLegalPause = YES;
 	[_player pause];
+}
+
+-(void)seekToLive {
 	
+	[self seek:[self getLiveTime] - marginBeforeEnd];
 }
 
 -(void)seek:(double)time {
