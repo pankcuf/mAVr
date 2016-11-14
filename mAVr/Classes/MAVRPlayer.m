@@ -70,6 +70,8 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 -(void)startStallTimer;
 -(void)stopStallTimer;
 -(CGFloat)getLiveTime;
+-(void)handleDuration:(CGFloat)newValue;
+-(void)handleLiveDuration;
 
 #pragma mark M3U8 methods
 -(NSString*)getStreamUrlForIndex:(NSUInteger)index;
@@ -345,7 +347,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		
 		[_player play];
 		
-		if( self.isLive && !seeking ) {
+		if( self.isLive && !seeking && !started) {
 			
 			[self seek:[self getLiveTime] - marginBeforeEnd];
 		}
@@ -380,10 +382,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	int32_t timeScale = self.isLive ? 1 : _player.currentItem.asset.duration.timescale;
 	
-	if (self.isLive) {
-		
-		_duration = [self getLiveTime];
-	}
+	[self handleLiveDuration];
 
 	if ( !self.isLive && _duration > 0 && floor(time) >= floor(_duration - marginBeforeEnd) ) {
 		[self handleComplete];
@@ -526,7 +525,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		else if (context == kPlayerExternalPlaybackContext)
 			[self externalPlaybackActiveHandler];
 		else if (context == kPlayerDurationContext)
-			_duration = CMTimeGetSeconds(_player.currentItem.duration);
+			[self handleDuration:CMTimeGetSeconds(_player.currentItem.duration)];
 		else if (context == kPlaybackLikelyToKeepUpContext)
 			[self playbackLikelyToKeepUpHandler];
 	};
@@ -724,14 +723,12 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 			if (_player.currentItem) {
 				
 				_currentTime = CMTimeGetSeconds(_player.currentItem.currentTime);
-				_duration = CMTimeGetSeconds(_asset.duration);
 
+				[self handleDuration:CMTimeGetSeconds(_asset.duration)];
+				
 				_isLive = isnan(_duration);
 				
-				if (self.isLive) {
-					
-					_duration = [self getLiveTime];
-				}
+				[self handleLiveDuration];
 			}
 			
 			if (!ready) {
@@ -866,10 +863,8 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 		
 		MAVRPlayer* sself = wself;
 		double newTime = CMTimeGetSeconds(time);
-		if (sself->_isLive) {
-			
-			sself->_duration = [sself getLiveTime];
-		}
+		
+		[sself handleLiveDuration];
 
 		if (sself->_duration > 0 && sself->_duration - newTime <= sself->marginBeforeEnd && !sself->completed && !self.isLive) {
 			
@@ -974,6 +969,24 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	seekNotAllowed = YES;
 	[self seek:0.0];
+}
+
+-(void)handleLiveDuration {
+	
+	if (self.isLive) {
+		
+		[self handleDuration:[self getLiveTime]];
+	}
+}
+
+-(void)handleDuration:(CGFloat)newValue {
+	
+	if (newValue != _duration) {
+		
+		_duration = newValue;
+
+		[self notify:MAVRPlayerNotificationDurationChange];
+	}
 }
 
 -(void)handleError {
