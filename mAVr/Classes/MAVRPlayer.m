@@ -289,6 +289,7 @@ static void *kPlaybackLikelyToKeepUpContext = (void *) 512;
 	
 	_state = MAVRPlayerStateLoading;
 	previousRate = 0.0;
+	started = ready = NO;
 	
 	[self notify:MAVRPlayerNotificationLoading];
 	
